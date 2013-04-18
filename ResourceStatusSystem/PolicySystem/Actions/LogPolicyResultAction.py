@@ -44,6 +44,11 @@ class LogPolicyResultAction( BaseAction ):
     if statusType is None:
       return S_ERROR( 'statusType should not be None' )
     
+    # It may happen that there are former PolicyResults, we delete them.
+    resDel = self.rmClient.deletePolicyResult( element = element, name = name, statusType = statusType )
+    if not resDel[ 'OK' ]:
+      return resDel
+    
     for singlePolicyResult in self.singlePolicyResults:
       
       status = singlePolicyResult[ 'Status' ]
