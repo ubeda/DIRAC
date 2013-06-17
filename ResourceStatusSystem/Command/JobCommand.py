@@ -5,33 +5,37 @@
   
 '''
 
+from datetime import datetime, timedelta
+
 from DIRAC                                                      import S_OK, S_ERROR
-from DIRAC.Core.DISET.RPCClient                                 import RPCClient
 from DIRAC.ResourceStatusSystem.Command.Command                 import Command
-from DIRAC.ResourceStatusSystem.Client.ResourceStatusClient     import ResourceStatusClient
 from DIRAC.ResourceStatusSystem.Client.ResourceManagementClient import ResourceManagementClient
 from DIRAC.ResourceStatusSystem.Utilities                       import CSHelpers
+from DIRAC.WorkloadManagementSystem.DB.JobDB                    import JobDB 
 
 __RCSID__ = '$Id:  $'
+
 
 class JobCommand( Command ):
   '''
     Job "master" Command.    
   '''
 
+
   def __init__( self, args = None, clients = None ):
     
     super( JobCommand, self ).__init__( args, clients )
 
-    if 'WMSAdministrator' in self.apis:
-      self.wmsAdmin = self.apis[ 'WMSAdministrator' ]
-    else:  
-      self.wmsAdmin = RPCClient( 'WorkloadManagement/WMSAdministrator' )
+    if 'JobDB' in self.apis:
+      self.jobDB = self.apis[ 'JobDB' ]
+    else:
+      self.jobDB = JobDB()  
 
     if 'ResourceManagementClient' in self.apis:
       self.rmClient = self.apis[ 'ResourceManagementClient' ]
     else:
       self.rmClient = ResourceManagementClient()
+
 
   def _storeCommand( self, result ):
     '''
@@ -47,6 +51,7 @@ class JobCommand( Command ):
       if not resQuery[ 'OK' ]:
         return resQuery
     return S_OK()
+
   
   def _prepareCommand( self ):
     '''
@@ -58,7 +63,12 @@ class JobCommand( Command ):
       return S_ERROR( '"name" not found in self.args' )
     name = self.args[ 'name' ]
      
-    return S_OK( name )
+    if not 'timespan' in self.args:
+      return S_ERROR( '"timespan" not found in self.args' )
+    timespan = self.args[ 'timespan' ]
+  
+    return S_OK( ( name, timespan ) )
+  
   
   def doNew( self, masterParams = None ):
     '''
@@ -71,49 +81,57 @@ class JobCommand( Command ):
       If there are jobs, are recorded and then returned.    
     '''
     
-    if masterParams is not None:
-      name = masterParams
-    else:
-      params = self._prepareCommand()
-      if not params[ 'OK' ]:
-        return params
-      name = params[ 'Value' ]  
-      
-    # selectDict, sortList, startItem, maxItems
-    # Returns statistics of Last day !  
-    results = self.wmsAdmin.getSiteSummaryWeb( { 'Site' : name }, [], 0, 0 )
+    if masterParams is True:
+      self.args[ 'name' ] = ''
+
+    params = self._prepareCommand()
+    if not params[ 'OK' ]:
+      return params
+
+    name, timespan = params[ 'Value' ]
+    
+    condDict = {}
+    if name:
+      condDict = { 'Site' : name }  
+
+    startTimeWindow = datetime.utcnow() - timedelta( seconds = timespan )
+    
+    results = self.jobDB.getCounters( 'Jobs', ['Site', 'Status'], 
+                                      condDict, newer = startTimeWindow, 
+                                      timeStamp = 'LastUpdateTime' )
+    
     if not results[ 'OK' ]:
       return results
-    results = results[ 'Value' ]    
+    # Results look like this
+    # [ ({'Status': 'Checking', 'Site': 'ANY'}, 6L), ...
     
-    if not 'ParameterNames' in results:
-      return S_ERROR( 'Wrong result dictionary, missing "ParameterNames"' )
-    params = results[ 'ParameterNames' ]
+    uniformResult = {}
     
-    if not 'Records' in results:
-      return S_ERROR( 'Wrong formed result dictionary, missing "Records"' )
-    records = results[ 'Records' ]
-       
-    uniformResult = [] 
-       
-    for record in records:
-       
-      # This returns a dictionary with the following keys
-      # 'Site', 'GridType', 'Country', 'Tier', 'MaskStatus', 'Received', 
-      # 'Checking', 'Staging', 'Waiting', 'Matched', 'Running', 'Stalled', 
-      # 'Done', 'Completed', 'Failed', 'Efficiency', 'Status'   
-      jobDict = dict( zip( params , record ))
+    jobStatuses = ( 'Checking', 'Completed', 'Done', 'Failed', 'Killed', 'Matched',
+                    'Received', 'Rescheduled', 'Running', 'Staging', 'Stalled',
+                    'Waiting' )
+    
+    for resultTuple in results[ 'Value' ]:
+      
+      selectionDict, numberOfJobs = resultTuple
+    
+      siteName = selectionDict[ 'Site' ]
+      
+      if siteName in ( 'ANY', 'Multiple' ):
+        continue
+    
+      if not siteName in uniformResult:
+        uniformResult[ siteName ] = dict.fromkeys( jobStatuses, 0 )
+      
+      uniformResult[ siteName ][ selectionDict[ 'Status' ] ] = numberOfJobs
 
-      # We cast efficiency to a float
-      jobDict[ 'Efficiency' ] = float( jobDict[ 'Efficiency' ] )
-
-      uniformResult.append( jobDict )
-
+    # Store results
     storeRes = self._storeCommand( uniformResult )
     if not storeRes[ 'OK' ]:
       return storeRes
     
-    return S_OK( uniformResult )   
+    return S_OK( uniformResult )
+  
   
   def doCache( self ):
     '''
@@ -131,6 +149,7 @@ class JobCommand( Command ):
       result = S_OK( [ dict( zip( result[ 'Columns' ], res ) ) for res in result[ 'Value' ] ] )
       
     return result
+         
              
   def doMaster( self ):
     '''
@@ -139,12 +158,12 @@ class JobCommand( Command ):
       Gets all sites and calls doNew method.
     '''
     
-    siteNames = CSHelpers.getSites()      
-    if not siteNames[ 'OK' ]:
-      return siteNames
-    siteNames = siteNames[ 'Value' ]
+#    siteNames = CSHelpers.getSites()      
+#    if not siteNames[ 'OK' ]:
+#      return siteNames
+#    siteNames = siteNames[ 'Value' ]
     
-    jobsResults = self.doNew( siteNames )
+    jobsResults = self.doNew( True )
     if not jobsResults[ 'OK' ]:
       self.metrics[ 'failed' ].append( jobsResults[ 'Message' ] )
       
