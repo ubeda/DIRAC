@@ -10,6 +10,8 @@ from DIRAC.Core.DISET.RPCClient                      import RPCClient
 #from DIRAC.ResourceStatusSystem.DB.ResourceStatusDB  import ResourceStatusDB 
 from DIRAC.ResourceStatusSystem.Utilities            import RssConfiguration  
 
+# NothingHappens
+
 __RCSID__ = '$Id:  $'
        
 class ResourceStatusClient( object ):
